@@ -7,17 +7,22 @@
 
 jacobi_result *jacobi_serial(matrix *m, bool verbose)
 {
-	int i, j, k = 0;
-	double norma, norma_ant = 0, soma, n1, n2;
+	int i, idx, k = 0;
+	double norma, norma_ant = 0, soma, n1, n2, diff;
+
+	int size = m->size;
+	int *row_ptr = m->row_ptr;
+	int *col_idx = m->col_idx;
+	double *values = m->values;
+	double *inv_diag = m->inv_diag;
+	double *b = m->b;
 
 	// initialize temp arrays
-	double *x = malloc(m->size * sizeof(double));
-	double *x0 = malloc(m->size * sizeof(double));
-	// double *x2 = malloc(m->size * sizeof(double));
-	double x2;
+	double *x = malloc(size * sizeof(double));
+	double *x0 = malloc(size * sizeof(double));
 
 	// initial position
-	for (i = 0; i < m->size; i++)
+	for (i = 0; i < size; i++)
 	{
 		x0[i] = 0;
 	}
@@ -28,38 +33,23 @@ jacobi_result *jacobi_serial(matrix *m, bool verbose)
 
 		n1 = 0;
 		n2 = 0;
-		for (i = 0; i < m->size; i++)
+		for (i = 0; i < size; i++)
 		{
-			// sum up line items
-			soma = 0;
-			item_matrix *item = m->a[i];
-			if (item)
+			// sum up line items (SOLO fuori diagonale, niente branch j!=i)
+			soma = 0.0;
+			int start = row_ptr[i];
+			int end = row_ptr[i + 1];
+			for (idx = start; idx < end; idx++)
 			{
-				double diagonal_value = 0;
-				while (item->column >= 0)
-				{
-					j = item->column;
-					if (j >= m->size)
-					{
-						puts("opa");
-						exit(0);
-					}
-					if (j != i)
-					{
-						soma += item->value * x0[j];
-					}
-					else
-					{
-						diagonal_value = item->value;
-					}
-					item++;
-				}
-				x[i] = (m->b[i] - soma) / diagonal_value;
-				x2 = x[i] - x0[i];
-
-				n1 += x2 * x2;
-				n2 += x[i] * x[i];
+				soma += values[idx] * x0[col_idx[idx]];
 			}
+
+			// moltiplicazione per l'inverso precalcolato, niente divisione qui
+			x[i] = (b[i] - soma) * inv_diag[i];
+
+			diff = x[i] - x0[i];
+			n1 += diff * diff;
+			n2 += x[i] * x[i];
 		}
 
 		// calculate current error as "norma"
@@ -74,18 +64,17 @@ jacobi_result *jacobi_serial(matrix *m, bool verbose)
 		else
 		{
 			norma_ant = norma;
-			for (i = 0; i < m->size; i++)
-			{
-				x0[i] = x[i];
-			}
+			double *tmp = x0;
+			x0 = x;
+			x = tmp;
 			k++;
 		}
 	}
 
 	// prepare results
 	jacobi_result *res = malloc(sizeof(jacobi_result));
-	res->x = malloc(m->size * sizeof(double));
-	for (i = 0; i < m->size; i++)
+	res->x = malloc(size * sizeof(double));
+	for (i = 0; i < size; i++)
 	{
 		res->x[i] = x[i];
 	}
@@ -95,7 +84,6 @@ jacobi_result *jacobi_serial(matrix *m, bool verbose)
 	// free memory
 	free(x);
 	free(x0);
-	// free(x2);
 
 	return res;
 }
