@@ -17,7 +17,7 @@ jacobi_result* jacobi_serial(matrix *m, bool verbose) {
 
 	//initial position
 	for (i = 0; i < m->size; i++) {
-		x0[i] = 1;
+		x0[i] = 0;
 	}
 
 	//main loop

@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <malloc.h>
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
@@ -13,127 +12,240 @@
  */
 matrix* matrix_load_mm(char* filename) {
 
-	long i, size, size_cols, count, row, col;
+    long i, size, size_cols, count;
+    long row, col;
+    double val;
 
-	//open file
-	FILE *file;
-	file = fopen(filename, "r");
-	if (file == NULL) {
-		puts("\nCannot open file");
-		puts(filename);
-		exit(1);
-	}
+    bool is_symmetric = false;
+    char line[1024];
+    long file_pos;
 
-	//read matrix size
-	fscanf(file, "%li", &size);
-	fscanf(file, "%li", &size_cols);
-	fscanf(file, "%li", &count);
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        puts("Cannot open file");
+        exit(1);
+    }
 
-	if (size != size_cols) {
-		puts("\nMatrix not symmetric");
-		exit(1);
-	}
+    // ----------------------------
+    // SKIP HEADER MATRIX MARKET
+    // ----------------------------
+    do {
+        file_pos = ftell(file);
 
-	//creates matrix
-	matrix *m = malloc(sizeof(matrix));
-	m->size = size;
+        if (!fgets(line, sizeof(line), file)) {
+            puts("Unexpected EOF");
+            exit(1);
+        }
 
-	//allocates vector right "B"
-	m->b = malloc(size * sizeof(double));
+        if (line[0] == '%') {
+            if (strncmp(line, "%%MatrixMarket", 14) == 0) {
+                if (strstr(line, "symmetric") ||
+                    strstr(line, "hermitian")) {
+                    is_symmetric = true;
+                }
+            }
+        }
 
-	//allocates vector with expected results
-	m->x = malloc(size * sizeof(double));
+    } while (line[0] == '%');
 
-	//allocates "rows"
-	m->a = malloc(size * sizeof(item_matrix*));
-	for (i = 1;i < size; i++) {
-		m->a[i] = NULL;
-	}
+    fseek(file, file_pos, SEEK_SET);
 
-	//allocates matrix contents
-	m->a[0] = malloc((count + size) * sizeof(item_matrix));
+    if (fscanf(file, "%li %li %li", &size, &size_cols, &count) != 3) {
+        puts("Invalid header");
+        exit(1);
+    }
 
-	//read matrix A
-	item_matrix *position = m->a[0];
-	int last_row = 1;
-	for (i = 0; i < count; i++) {
-		fscanf(file, "%li", &row);
-		fscanf(file, "%li", &col);
-		if (row != last_row) {
-			position->column = -1;
-			position++;
-		}
-		position->column = col - 1;
-		if (!fscanf(file, "%lf", &position->value)) {
-			break;
-		}
-		if (row != last_row) {
-			m->a[row - 1] = position;
-			last_row = row;
-		}
-		position++;
+    if (size != size_cols) {
+        puts("Matrix not square");
+        exit(1);
+    }
 
-	}
-	position->column = -1;
+    matrix *m = malloc(sizeof(matrix));
+    m->size = size;
 
-	//read vector B
-	char filename_b[100];
-	strncpy((char*)  &filename_b, filename, strlen(filename) - 4);
-	filename_b[strlen(filename) - 4] = '\0';
-	strcat((char*) &filename_b, "_b.mtx");
-	file = fopen(filename_b, "r");
-	if (file == NULL) {
-		puts("\nCannot open file");
-		puts(filename_b);
-		exit(1);
-	}
+    m->b = malloc(size * sizeof(double));
+    m->x = malloc(size * sizeof(double));
 
-	//ignores
-	fscanf(file, "%li", &count);
-	fscanf(file, "%li", &size_cols);
+    m->a = malloc(size * sizeof(item_matrix*));
 
-	for (i = 0; i < count; i++) {
-		if (!fscanf(file, "%lf", &m->b[i])) {
-			break;
-		}
-	}
+    // init pointers
+    for (i = 0; i < size; i++) {
+        m->a[i] = NULL;
+    }
 
-	fclose(file);
+    // ----------------------------
+    // TEMP STORAGE (triplets)
+    // ----------------------------
+    long cap = is_symmetric ? 2 * count : count;
 
-	//read expected results from vector X
-	char filename_x[100];
-	strncpy((char*) &filename_x, filename, strlen(filename) - 4);
-	filename_x[strlen(filename) - 4] = '\0';
-	strcat((char*) &filename_x, "_x.mtx");
+    long *Trow = malloc(cap * sizeof(long));
+    long *Tcol = malloc(cap * sizeof(long));
+    double *Tval = malloc(cap * sizeof(double));
 
-	if (access(filename_x, R_OK) != -1) {
+    long nnz = 0;
 
-		file = fopen(filename_x, "r");
-		if (file == NULL) {
-			puts("\nCannot open file");
-			puts(filename_x);
-			exit(1);
-		}
+    // row counts for CSR-style build
+    int *row_count = calloc(size, sizeof(int));
 
-		//ignores
-		fscanf(file, "%li", &count);
-		fscanf(file, "%li", &size_cols);
+    // ----------------------------
+    // READ TRIPLETS
+    // ----------------------------
+    for (i = 0; i < count; i++) {
 
-		for (i = 0; i < count; i++) {
-			if (!fscanf(file, "%lf", &m->x[i])) {
-				break;
-			}
-		}
+        if (fscanf(file, "%li %li %lf", &row, &col, &val) != 3)
+            break;
 
-		fclose(file);
-	} else {
-		for (i = 0; i < size; i++) {
-			m->x[i] = -1.0;
-		}
-	}
+        row--; col--;
 
-	return m;
+        Trow[nnz] = row;
+        Tcol[nnz] = col;
+        Tval[nnz] = val;
+        nnz++;
 
+        row_count[row]++;
+
+        if (row == col) continue;
+
+        if (is_symmetric) {
+            Trow[nnz] = col;
+            Tcol[nnz] = row;
+            Tval[nnz] = val;
+            nnz++;
+
+            row_count[col]++;
+        }
+    }
+	    // ----------------------------
+    // ALLOCAZIONE STRUTTURA RIGHE
+    // ----------------------------
+
+    // massimo possibile (over-allocation sicura)
+    long *row_size = calloc(size, sizeof(long));
+
+    for (i = 0; i < nnz; i++) {
+        row_size[Trow[i]]++;
+    }
+
+    m->a[0] = malloc((nnz + size) * sizeof(item_matrix));
+
+    item_matrix *ptr = m->a[0];
+
+    for (i = 1; i < size; i++) {
+        m->a[i] = NULL;
+    }
+
+    // cursori per riga
+    item_matrix **cursor = malloc(size * sizeof(item_matrix*));
+
+    long offset = 0;
+    for (i = 0; i < size; i++) {
+        m->a[i] = ptr + offset;
+        cursor[i] = m->a[i];
+        offset += (row_size[i] + 1); // +1 sentinella
+    }
+
+    // reset row_size per uso come contatore
+    for (i = 0; i < size; i++) {
+        row_size[i] = 0;
+    }
+
+    // ----------------------------
+    // FILL MATRICE
+    // ----------------------------
+
+    for (i = 0; i < nnz; i++) {
+
+        long r = Trow[i];
+        long c = Tcol[i];
+
+        item_matrix *p = cursor[r];
+
+        p->column = (int)c;
+        p->value = Tval[i];
+
+        cursor[r]++;
+    }
+
+    // sentinelle
+    for (i = 0; i < size; i++) {
+        cursor[i]->column = -1;
+    }
+
+    free(cursor);
+    free(Trow);
+    free(Tcol);
+    free(Tval);
+    free(row_count);
+    free(row_size);
+
+    // ----------------------------
+    // READ / GENERATE B
+    // ----------------------------
+
+    char filename_b[256];
+    strncpy(filename_b, filename, strlen(filename) - 4);
+    filename_b[strlen(filename) - 4] = '\0';
+    strcat(filename_b, "_b.mtx");
+
+    if (access(filename_b, R_OK) != -1) {
+
+        FILE *fb = fopen(filename_b, "r");
+
+        fscanf(fb, "%li %li", &size, &size_cols);
+
+        for (i = 0; i < m->size; i++) {
+            fscanf(fb, "%lf", &m->b[i]);
+        }
+
+        fclose(fb);
+
+    } else {
+
+        // b = A * 1
+        for (i = 0; i < m->size; i++) {
+
+            double sum = 0.0;
+
+            item_matrix *it = m->a[i];
+
+            while (it->column != -1) {
+                sum += it->value;
+                it++;
+            }
+
+            m->b[i] = sum;
+        }
+    }
+
+    // ----------------------------
+    // READ X (optional)
+    // ----------------------------
+
+    char filename_x[256];
+    strncpy(filename_x, filename, strlen(filename) - 4);
+    filename_x[strlen(filename) - 4] = '\0';
+    strcat(filename_x, "_x.mtx");
+
+    if (access(filename_x, R_OK) != -1) {
+
+        FILE *fx = fopen(filename_x, "r");
+
+        fscanf(fx, "%li %li", &size, &size_cols);
+
+        for (i = 0; i < m->size; i++) {
+            fscanf(fx, "%lf", &m->x[i]);
+        }
+
+        fclose(fx);
+
+    } else {
+        for (i = 0; i < m->size; i++) {
+            m->x[i] = -1.0;
+        }
+    }
+
+    fclose(file);
+    return m;
 }
 
 matrix* matrix_load_original(char* filename) {
