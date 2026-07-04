@@ -1,3 +1,4 @@
+#include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -8,8 +9,41 @@
 /**
  * http://math.nist.gov/MatrixMarket/formats.html
  *
- * It's necessary to remove headers
+ * File unificato OMP + MPI.
  *
+ * NOTA IMPORTANTE:
+ * Questo file usa ESCLUSIVAMENTE il loader CSR della versione OMP
+ * (matrix_load_mm / matrix_load_original), perché è quello testato
+ * e funzionante, ed è pensato per essere condiviso dalla versione
+ * OMP e dalla versione MPI così che entrambe lavorino sulla STESSA
+ * rappresentazione della matrice (row_ptr / col_idx / values / inv_diag).
+ *
+ * Di conseguenza matrix.h deve esporre la struct "matrix" nel formato
+ * CSR (quella usata dalla versione OMP), NON più il vecchio formato
+ * a righe di puntatori (item_matrix** a) usato dalla vecchia versione
+ * MPI. Se il codice MPI (main / jacobi_mpi.c ecc.) accede ancora a
+ * m->a, va aggiornato per usare row_ptr/col_idx/values, altrimenti
+ * non compila più: è un effetto collateral atteso di questa unione,
+ * non un bug di questo file.
+ *
+ * Ho lasciato invariata la gestione degli errori (exit(1) senza
+ * MPI_Finalize) esattamente come nella versione OMP originale: non
+ * ho aggiunto MPI_Finalize() nei path di errore perché a questo punto
+ * non è garantito che MPI_Init sia già stato chiamato (dipende da dove,
+ * nel main MPI, verrà invocato matrix_load). Se in futuro vuoi uno
+ * shutdown "pulito" anche in caso di errore di parsing nella versione
+ * MPI, fammelo sapere e aggiungo un wrapper tipo:
+ *   static void fatal_error(const char *msg) {
+ *       puts(msg);
+ *       #ifdef USE_MPI
+ *       int initialized; MPI_Initialized(&initialized);
+ *       if (initialized) MPI_Finalize();
+ *       #endif
+ *       exit(1);
+ *   }
+ */
+
+/**
  * Costruzione CSR a due passate:
  *  1) passata di lettura: si contano gli elementi fuori diagonale per riga
  *     e si memorizza la diagonale a parte (niente più assunzione che le

@@ -88,6 +88,13 @@ jacobi_result *jacobi_mpi(matrix *m, bool verbose, int process_num, int process_
         x0[i] = 1.0;
     }
 
+    // shortcut ai campi CSR della matrice (stessa struct usata dalla versione OMP)
+    int *row_ptr = m->row_ptr;
+    int *col_idx = m->col_idx;
+    double *values = m->values;
+    double *inv_diag = m->inv_diag;
+    double *b = m->b;
+
     // main loop
     while (k < 100 && !terminar)
     {
@@ -98,45 +105,26 @@ jacobi_result *jacobi_mpi(matrix *m, bool verbose, int process_num, int process_
         {
 
             soma = 0;
-            item_matrix *item = m->a[i];
-            if (item)
-            {
-                double diagonal_value = 0;
-                while (item->column >= 0)
-                {
-                    j = item->column;
-                    if (j != i)
-                    {
-                        soma += item->value * x0[j];
-                    }
-                    else
-                    {
-                        diagonal_value = item->value;
-                    }
-                    item++;
-                }
 
-                if (verbose)
-                    printf("Process %i: linha = %i, soma = %f\n", process_num, i, soma);
-                if (diagonal_value == 0)
-                {
-                    puts("nok");
-                    MPI_Finalize();
-                    exit(1);
-                }
-                shared[z] = (m->b[i] - soma) / diagonal_value;
-                x2 = shared[z] - x0[i];
-
-                // partial error
-                shared[n1] += x2 * x2;
-                shared[n2] += shared[z] * shared[z];
-            }
-            else
+            // lettura riga i in formato CSR: elementi fuori diagonale in
+            // [row_ptr[i], row_ptr[i+1]), diagonale gia' invertita in inv_diag[i]
+            // (stessa logica gia' usata e testata nella versione OMP)
+            int start = row_ptr[i];
+            int end = row_ptr[i + 1];
+            for (int idx = start; idx < end; idx++)
             {
-                puts("nokx");
-                MPI_Finalize();
-                exit(0);
+                soma += values[idx] * x0[col_idx[idx]];
             }
+
+            if (verbose)
+                printf("Process %i: linha = %i, soma = %f\n", process_num, i, soma);
+
+            shared[z] = (b[i] - soma) * inv_diag[i];
+            x2 = shared[z] - x0[i];
+
+            // partial error
+            shared[n1] += x2 * x2;
+            shared[n2] += shared[z] * shared[z];
         }
 
         /// receive/send all: n1, n2, x
